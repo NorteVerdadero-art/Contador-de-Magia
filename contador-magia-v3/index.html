@@ -55,6 +55,8 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:var(--text);overscroll-beh
 /* ── QUADS ── */
 .quad{position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;cursor:pointer;user-select:none;-webkit-user-select:none;transition:filter .12s}
 .quad:active{filter:brightness(.8)}
+/* Línea central divisoria tenue */
+.quad::after{content:'';position:absolute;top:50%;left:8%;right:8%;height:1px;background:rgba(255,255,255,.08);pointer-events:none}
 .quad.dead{filter:grayscale(.9) brightness(.3)}
 .board.p4 .quad:nth-child(1){border-right:2.5px solid rgba(0,0,0,.3);border-bottom:2.5px solid rgba(0,0,0,.3)}
 .board.p4 .quad:nth-child(2){border-bottom:2.5px solid rgba(0,0,0,.3)}
@@ -68,7 +70,10 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:var(--text);overscroll-beh
 .board.p3 .quad:nth-child(1) .qi,.board.p3 .quad:nth-child(2) .qi{transform:rotate(180deg)}
 .board.p3 .quad:nth-child(3){grid-column:1/-1}
 
-.qi{display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%;pointer-events:none;padding:14px}
+.qi{display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%;height:100%;pointer-events:none;padding:14px;position:relative}
+/* Indicadores de mitad tap */
+.qi::before{content:'＋';position:absolute;top:10px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:rgba(255,255,255,.18);letter-spacing:1px;pointer-events:none}
+.qi::after{content:'－';position:absolute;bottom:10px;left:50%;transform:translateX(-50%);font-size:11px;font-weight:700;color:rgba(255,255,255,.18);letter-spacing:1px;pointer-events:none}
 
 /* Life */
 .ql{font-family:'Bebas Neue',sans-serif;font-size:clamp(68px,21vw,144px);line-height:.88;color:#fff;text-shadow:0 6px 28px rgba(0,0,0,.3);letter-spacing:-2px}
@@ -100,6 +105,28 @@ body{font-family:'DM Sans',system-ui,sans-serif;color:var(--text);overscroll-beh
 /* Flash */
 @keyframes flash{0%{filter:brightness(1.7)}100%{filter:brightness(1)}}
 .quad.flash{animation:flash .28s ease-out}
+
+/* Mana toast — aparece en el cuadrante y sube flotando */
+.mana-toast{
+  position:absolute;
+  left:50%;transform:translateX(-50%);
+  bottom:30%;
+  font-family:'Bebas Neue',sans-serif;
+  font-size:28px;letter-spacing:2px;
+  color:#fff;
+  text-shadow:0 2px 12px rgba(0,0,0,.5);
+  pointer-events:none;
+  white-space:nowrap;
+  animation:mana-float 1.4s ease-out forwards;
+  z-index:10;
+}
+.mana-toast.neg{color:#ff9a9a}
+.mana-toast.set{font-size:22px;color:rgba(160,200,255,.95)}
+@keyframes mana-float{
+  0%  {opacity:1;transform:translateX(-50%) translateY(0)   scale(1)}
+  20% {opacity:1;transform:translateX(-50%) translateY(-8px) scale(1.08)}
+  100%{opacity:0;transform:translateX(-50%) translateY(-52px) scale(.9)}
+}
 
 /* ── CENTER HUB ── */
 #hub{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:50;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
@@ -578,10 +605,19 @@ function nextTurn(){
 }
 
 function updateTurnUI(){
+  // Solo actualiza UI elements — NO llama render() para evitar loop infinito
   const tn=document.getElementById('turn-n');if(tn)tn.textContent=turnNum;
   const pdt=document.getElementById('pd-turn');if(pdt)pdt.textContent=turnNum;
-  refreshPriorityModal();
-  render();
+  // Actualizar badges de turno en quads directamente (sin re-render completo)
+  document.querySelectorAll('.qturn').forEach(el=>el.remove());
+  players.forEach((p,i)=>{
+    if(i===activeTurn&&!p.dead){
+      const q=document.getElementById('q'+i);
+      if(q){const tb=document.createElement('div');tb.className='qturn';
+        tb.innerHTML='<div class="qturn-badge">TURNO '+turnNum+'</div>';q.appendChild(tb);}
+    }
+  });
+  if(priorityOpen) refreshPriorityModal();
 }
 
 function openPriority(){
@@ -651,14 +687,55 @@ function render(){
   const b=document.getElementById('board');
   b.className='board p'+players.length;b.innerHTML='';
   players.forEach((p,i)=>b.appendChild(buildQ(p,i)));
-  updDN();updateTurnUI();
+  updDN();
+  // Actualizar turn pill sin loop
+  const tn=document.getElementById('turn-n');if(tn)tn.textContent=turnNum;
 }
 function lc(v,dead){if(dead||v<=0)return 'dead-c';if(v<=9)return 'low';if(v<=20)return 'warn';return '';}
 function buildQ(p,i){
   const q=document.createElement('div');
   q.className='quad'+(p.dead?' dead':'');q.id='q'+i;q.style.background=p.color;
-  q.onclick=()=>openSheet(i);
+  // Tap mitad superior = +1, mitad inferior = -1, tap largo = sheet
+  let _tapTimer=null, _tapMoved=false;
+  q.addEventListener('touchstart', e=>{
+    _tapMoved=false;
+    _tapTimer=setTimeout(()=>{ _tapTimer=null; openSheet(i); }, 500);
+  }, {passive:true});
+  q.addEventListener('touchmove', ()=>{ _tapMoved=true; if(_tapTimer){clearTimeout(_tapTimer);_tapTimer=null;} }, {passive:true});
+  q.addEventListener('touchend', e=>{
+    if(_tapMoved){ if(_tapTimer){clearTimeout(_tapTimer);_tapTimer=null;} return; }
+    if(_tapTimer===null) return; // long press already fired
+    clearTimeout(_tapTimer); _tapTimer=null;
+    if(players[i].dead) return;
+    const touch = e.changedTouches[0];
+    const rect = q.getBoundingClientRect();
+    const relY = touch.clientY - rect.top;
+    snap();
+    const rotated = q.dataset.rotated === '1';
+    const upper = rotated ? (relY >= rect.height / 2) : (relY < rect.height / 2);
+    snap();
+    if(upper){ players[i].life+=1; } else { players[i].life-=1; }
+    chkDeaths(); render();
+    flashQ(i);
+    sv('','', (upper?'+1 ':'-1 ') + players[i].name + ' → ' + players[i].life, '');
+  }, {passive:true});
+  // Desktop fallback
+  q.addEventListener('click', e=>{
+    if(players[i].dead) return;
+    const rect = q.getBoundingClientRect();
+    const relY = e.clientY - rect.top;
+    const rotated = q.dataset.rotated === '1';
+    const upper = rotated ? (relY >= rect.height / 2) : (relY < rect.height / 2);
+    snap();
+    if(upper){ players[i].life+=1; } else { players[i].life-=1; }
+    chkDeaths(); render();
+    flashQ(i);
+    sv('','', (upper?'+1 ':'-1 ') + players[i].name + ' → ' + players[i].life, '');
+  });
   const qi=document.createElement('div');qi.className='qi';
+  // Mark rotated quads so tap logic can invert
+  const isRotated=(players.length===4&&(i===0||i===1))||(players.length===3&&(i===0||i===1))||(players.length===2&&i===0);
+  if(isRotated) q.dataset.rotated='1';
 
   // Active turn indicator
   if(i===activeTurn&&!p.dead){
@@ -745,8 +822,8 @@ function rsh(){
 }
 function shL(d){if(shI<0)return;snap();players[shI].life+=d;chkDeaths();render();rsh();}
 function shLs(v){if(shI<0)return;snap();if(v===-999){players[shI].dead=true;players[shI].life=0;chkDeaths();render();closeSh();return;}players[shI].life=v;chkDeaths();render();rsh();}
-function shM(d){if(shI<0)return;snap();players[shI].mana=Math.max(0,(players[shI].mana||0)+d);render();rsh();}
-function shMs(v){if(shI<0)return;snap();players[shI].mana=v;render();rsh();}
+function shM(d){if(shI<0)return;snap();players[shI].mana=Math.max(0,(players[shI].mana||0)+d);render();rsh();showManaToast(shI,d,false);}
+function shMs(v){if(shI<0)return;snap();players[shI].mana=v;render();rsh();showManaToast(shI,v,true);}
 function shCtr(k,d){if(shI<0)return;snap();players[shI].counters[k]=Math.max(0,(players[shI].counters[k]||0)+d);chkDeaths();render();rsh();}
 function shCus(k,d){if(shI<0)return;snap();players[shI].custom[k]=Math.max(0,(players[shI].custom[k]||0)+d);render();rsh();}
 function addCu(){const inp=document.getElementById('cinp');const n=inp.value.trim();if(!n||shI<0)return;snap();players[shI].custom[n]=0;inp.value='';render();rsh();}
@@ -814,6 +891,28 @@ function resC(w){const wd=(w||'').toLowerCase();for(const d of CTRS){if(d.alias.
 function findFirst(){return players.findIndex(p=>!p.dead);}
 
 // ════════════════════════════════════════════════════
+//  MANA TOAST — indicador visual en cuadrante
+// ════════════════════════════════════════════════════
+function showManaToast(pi, delta, isSet){
+  const q = document.getElementById('q'+pi);
+  if(!q) return;
+  // Remover toasts anteriores del mismo quad
+  q.querySelectorAll('.mana-toast').forEach(t=>t.remove());
+  const toast = document.createElement('div');
+  // Texto: "+3 🔷", "-2 🔷", "= 5 🔷"
+  if(isSet){
+    toast.className = 'mana-toast set';
+    toast.textContent = '= ' + delta + ' 🔷';
+  } else {
+    toast.className = 'mana-toast' + (delta < 0 ? ' neg' : '');
+    toast.textContent = (delta > 0 ? '+' : '') + delta + ' 🔷';
+  }
+  q.appendChild(toast);
+  // Auto-remove after animation
+  setTimeout(()=>toast.remove(), 1500);
+}
+
+// ════════════════════════════════════════════════════
 //  COMMAND PARSER — FULL v4
 //  Mecánicas completas, mana con color, vida, contadores
 // ════════════════════════════════════════════════════
@@ -856,7 +955,7 @@ function parseCmd(raw){
   if(manaSet){const n=toN(manaSet[1]);if(n!==null){
     const tm=c.match(/\s+(?:de|para|a)\s+(\w+)$/);
     const pi=tm?findP(tm[1]):findFirst();
-    if(pi>=0){snap();players[pi].mana=n;render();if(shI===pi)rsh();sv('',heard,players[pi].name+' — Pool maná: '+n,'');return;}
+    if(pi>=0){snap();players[pi].mana=n;render();if(shI===pi)rsh();showManaToast(pi,n,true);sv('',heard,players[pi].name+' — Pool maná: '+n,'');return;}
   }}
 
   // GAIN: "[nombre] tiene/gana/agrega/acumula N mana(s) [color]"
@@ -864,20 +963,20 @@ function parseCmd(raw){
   let manaGain=c.match(/(\w+)\s+(?:tiene|gana|agrega|acumula|suma|a[nñ]ade|pone|consigue)\s+(\w+)\s+(?:de\s+)?man[aá]/)||
                 c.match(/(\w+)\s+(?:agrega|pone|a[nñ]ade)\s+(\w+)\s+(?:de\s+)?(?:man[aá]\s+)?(?:roj[oa]|azul|verde|negr[oa]|blanc[oa]|gen[eé]ric[oa]|incolor[oa])/);
   if(manaGain){const pi=findP(manaGain[1]);const n=toN(manaGain[2]);
-    if(pi>=0&&n!==null){snap();players[pi].mana=(players[pi].mana||0)+n;render();if(shI===pi)rsh();sv('',heard,players[pi].name+' +'+n+' maná — Pool: '+players[pi].mana,'');return;}
+    if(pi>=0&&n!==null){snap();players[pi].mana=(players[pi].mana||0)+n;render();if(shI===pi)rsh();showManaToast(pi,n,false);sv('',heard,players[pi].name+' +'+n+' maná — Pool: '+players[pi].mana,'');return;}
   }
 
   // USE: "gasto/uso N mana", "[nombre] gasta N mana"
   let manaUse=c.match(/(?:gasto|uso|quito|resto|consumo)\s+(\w+)\s+(?:de\s+|man[aá]s?\s+)?man[aá]?/);
-  if(manaUse&&c.includes('man')){const n=toN(manaUse[1]);if(n!==null){const pi=findFirst();if(pi>=0){snap();players[pi].mana=Math.max(0,(players[pi].mana||0)-n);render();if(shI===pi)rsh();sv('',heard,players[pi].name+' -'+n+' maná — Pool: '+players[pi].mana,'');return;}}}
+  if(manaUse&&c.includes('man')){const n=toN(manaUse[1]);if(n!==null){const pi=findFirst();if(pi>=0){snap();players[pi].mana=Math.max(0,(players[pi].mana||0)-n);render();if(shI===pi)rsh();showManaToast(pi,-n,false);sv('',heard,players[pi].name+' -'+n+' maná — Pool: '+players[pi].mana,'');return;}}}
   let manaUse2=c.match(/(\w+)\s+(?:gasta|usa|consume)\s+(\w+)\s+(?:de\s+)?man[aá]/);
-  if(manaUse2){const pi=findP(manaUse2[1]);const n=toN(manaUse2[2]);if(pi>=0&&n!==null){snap();players[pi].mana=Math.max(0,(players[pi].mana||0)-n);render();if(shI===pi)rsh();sv('',heard,players[pi].name+' -'+n+' maná — Pool: '+players[pi].mana,'');return;}}
+  if(manaUse2){const pi=findP(manaUse2[1]);const n=toN(manaUse2[2]);if(pi>=0&&n!==null){snap();players[pi].mana=Math.max(0,(players[pi].mana||0)-n);render();if(shI===pi)rsh();showManaToast(pi,-n,false);sv('',heard,players[pi].name+' -'+n+' maná — Pool: '+players[pi].mana,'');return;}}
 
   // CLEAR pool
   if(/vac[íi][ao]\s+(?:(?:su|mi|el|todo\s+el)\s+)?(?:pool|man[aá])|clear\s+man[aá]|mana\s+cero|sin\s+man[aá]/.test(c)){
     const nm2=c.match(/(\w+)\s+vac[íi][ao]/);
     const pi=nm2?findP(nm2[1]):findFirst();
-    if(pi>=0){snap();players[pi].mana=0;render();if(shI===pi)rsh();sv('',heard,players[pi].name+' — Pool vaciado.','');return;}
+    if(pi>=0){snap();players[pi].mana=0;render();if(shI===pi)rsh();showManaToast(pi,0,true);sv('',heard,players[pi].name+' — Pool vaciado.','');return;}
   }
 
   // ══ MECÁNICAS ══
@@ -934,7 +1033,7 @@ function parseCmd(raw){
       const ck=resC(what);
       if(ck){snap();players[pi].counters[ck]=(players[pi].counters[ck]||0)+n;const def=CTRS.find(x=>x.key===ck);chkDeaths();render();flashQ(pi);sv('',heard,players[pi].name+' +'+n+' '+def.label,'');return;}
       if(/vida|vidas/.test(what)){snap();players[pi].life+=n;chkDeaths();render();flashQ(pi);sv('',heard,players[pi].name+' +'+n+' vidas → '+players[pi].life,'');return;}
-      if(/man[aá]/.test(what)){snap();players[pi].mana=(players[pi].mana||0)+n;render();sv('',heard,players[pi].name+' +'+n+' maná','');return;}
+      if(/man[aá]/.test(what)){snap();players[pi].mana=(players[pi].mana||0)+n;render();showManaToast(pi,n,false);sv('',heard,players[pi].name+' +'+n+' maná','');return;}
     }
   }
 
@@ -945,7 +1044,7 @@ function parseCmd(raw){
       const ck=resC(what);
       if(ck){snap();players[pi].counters[ck]=Math.max(0,(players[pi].counters[ck]||0)-n);const def=CTRS.find(x=>x.key===ck);render();flashQ(pi);sv('',heard,players[pi].name+' -'+n+' '+def.label,'');return;}
       if(/vida|vidas|da[nñ]o|punto|puntos/.test(what)){snap();players[pi].life-=n;chkDeaths();render();flashQ(pi);sv('',heard,players[pi].name+' -'+n+' → '+players[pi].life,'');return;}
-      if(/man[aá]/.test(what)){snap();players[pi].mana=Math.max(0,(players[pi].mana||0)-n);render();sv('',heard,players[pi].name+' -'+n+' maná','');return;}
+      if(/man[aá]/.test(what)){snap();players[pi].mana=Math.max(0,(players[pi].mana||0)-n);render();showManaToast(pi,-n,false);sv('',heard,players[pi].name+' -'+n+' maná','');return;}
     }
   }
 
